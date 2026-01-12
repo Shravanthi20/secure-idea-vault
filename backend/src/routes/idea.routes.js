@@ -2,8 +2,10 @@ const router = require("express").Router();
 const auth = require("../middleware/auth.middleware");
 const acl = require("../middleware/acl.middleware");
 const upload = require("../middleware/upload.middleware");
-const { uploadIdea, viewIdea, downloadIdea } = require("../controllers/idea.controller");
+const { uploadIdea, viewIdea, downloadIdea, listIdeas } = require("../controllers/idea.controller");
 const audit = require("../middleware/audit.middleware");
+
+router.get("/", auth, listIdeas);
 router.post("/upload", auth, acl("UPLOAD"), upload.single("file"), audit("UPLOAD"), uploadIdea);
 
 router.get("/:id", auth, acl("VIEW"), audit("VIEW"), viewIdea);

@@ -6,19 +6,56 @@ const OTPSession = require("../models/OTPSession");
 const { generateOTP, hashOTP, sendOTPEmail } = require("../services/otp.service");
 
 
+const { generateRSAKeys, encryptAES, encryptAESKey } = require("../services/crypto.service");
+
 exports.register = async (req, res) => {
-    const { email, password } = req.body;
-    const salt = crypto.randomBytes(16).toString("hex");
-    const passwordHash = await bcrypt.hash(password + salt, 12);
-    await User.create({ email, passwordHash, salt });
-    res.send("Registered");
+    try {
+        const { email, password } = req.body;
+        // Check if user exists
+        const existing = await User.findOne({ email });
+        if (existing) return res.status(400).send("User already exists");
+
+        const salt = crypto.randomBytes(16).toString("hex");
+        const passwordHash = await bcrypt.hash(password + salt, 12);
+
+        // Generate RSA pair
+        const { publicKey, privateKey } = generateRSAKeys();
+
+        // Encrypt Private Key with a derived key from password (or separate one, simplistic here for MVP)
+        // Ideally we use a strong key derivation, but here we use a random AES key encrypted under itself or similar?
+        // Actually, to store privateKey securely, we typically encrypt it with the user's password-derived key.
+        // For this simplified flow, we'll store it but really should be encrypted. 
+        // The Model expects 'encryptedPrivateKey: Buffer' and 'privateKeyIV: Buffer'.
+
+        // Let's encrypt the private key using a hash of the SERVER SECRET (JWT_SECRET)
+        // This allows the server to decrypt it later to perform actions on behalf of the user.
+        // (In a real high-security app, we might use a Hardware Security Module or separate Key Management Service)
+        const masterKey = crypto.createHash("sha256").update(process.env.JWT_SECRET).digest(); // 32 bytes
+        const iv = crypto.randomBytes(16);
+        const cipher = crypto.createCipheriv("aes-256-cbc", masterKey, iv);
+        const encryptedPrivateKey = Buffer.concat([cipher.update(privateKey), cipher.final()]);
+
+        await User.create({
+            email,
+            passwordHash,
+            salt,
+            role: "OWNER",
+            publicKey,
+            encryptedPrivateKey,
+            privateKeyIV: iv
+        });
+        res.send("Registered");
+    } catch (err) {
+        console.error(err);
+        res.status(500).send("Registration failed");
+    }
 };
 
 exports.login = async (req, res) => {
     const { email, password } = req.body;
     const user = await User.findOne({ email });
     if (!user) return res.status(400).send("Invalid user");
-    const valid = bcrypt.verify(password, +user.salt, user.passwordHash);
+    const valid = await bcrypt.compare(password + user.salt, user.passwordHash);
     if (!valid) return res.status(401).send("Invalid Credentials");
     const otp = generateOTP();
     await OTPSession.create({

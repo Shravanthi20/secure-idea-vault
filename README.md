@@ -47,13 +47,63 @@ Encoding	QR Code
 - QR Verification Module
 - Audit Logging Module
 
-### Installation
-```
-git clone https://github.com/your-username/idea-vault-secure.git
-cd secure-idea-vault
-npm install
-npm start
-```
+### Setup and Running Locally
+
+1. **Clone the Repository**
+   ```bash
+   git clone https://github.com/your-username/idea-vault-secure.git
+   cd secure-idea-vault
+   ```
+
+2. **Backend Setup**
+   ```bash
+   cd backend
+   npm install
+   ```
+
+3. **Configure Environment**
+   - Create a `.env` file in the `backend` directory.
+   - Copy the contents from `.env.example` to `.env`.
+   - Update `MONGO_URI` with your MongoDB connection string.
+   - Update `EMAIL_USER` and `EMAIL_PASS` with your email credentials (use App Password for Gmail).
+
+4. **Run the Application**
+   ```bash
+   # Development Mode
+   npm run dev
+
+   # Production Mode
+   npm start
+   ```
+
+### Deployment (Industry Standard)
+
+To deploy this project to a cloud provider (e.g., Render, Vercel, AWS):
+
+1. **Push your code to GitHub/GitLab.**
+2. **Connect your repository** to the cloud provider.
+3. **Environment Variables**: In the provider's dashboard (Settings > Environment Variables), add the keys from `.env.example` (`MONGO_URI`, `JWT_SECRET`, etc.) with your production values.
+   > **Note**: You do NOT upload the `.env` file. It is ignored by git for security.
+
+### User Guide (How people use the app)
+
+This section describes the flow for an **End User** (Student/Mentor) interacting with the deployed application. They do **not** need to configure anything.
+
+1.  **Registration**:
+    - User signs up with email and password.
+    - System Hashes password (bcrypt) + Salt.
+2.  **Login (MFA)**:
+    - User enters Email + Password.
+    - **Step 1**: Server verifies password hash.
+    - **Step 2**: Server sends a 6-digit OTP to the user's email.
+    - User checks their email inbox and enters the OTP code.
+3.  **Idea Submission (Secure)**:
+    - User uploads text/file.
+    - System encrypts data (AES) and digitally signs it.
+4.  **Verification**:
+    - User can generate a QR code for their idea.
+    - Anyone scanning the QR code can verify the idea's ownership and integrity.
+
 ### Security Testing
 
 - Brute-force protection

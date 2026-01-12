@@ -1,6 +1,7 @@
-const router= require("express").Router();
-const {register, login, verifyOTP}= require("../controllers/auth.controller");
+const router = require("express").Router();
+const { register, login, verifyOTP } = require("../controllers/auth.controller");
+const rateLimit = require("../middleware/rateLimit.middleware");
 router.post("/register", register);
-router.post("/login", login);
-router.post("/verify-otp", verifyOTP);
-module.exports= router;
+router.post("/verify-otp", rateLimit, verifyOTP);
+router.post("/login", rateLimit, login);
+module.exports = router;

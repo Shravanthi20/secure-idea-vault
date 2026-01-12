@@ -8,7 +8,7 @@ const IdeaSchema = new mongoose.Schema({
     encryptedAESKey: Buffer,
     iv: Buffer,
     dataHash: String,
-    digitalSignature: String,
+    digitalSignature: Buffer,
     timestamp: { type: Date, default: Date.now }
 });
 
