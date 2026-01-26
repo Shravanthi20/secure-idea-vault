@@ -6,6 +6,8 @@ const { decryptAES, decryptAESKey, verifySignature } = require("../services/cryp
 const QRCode = require('qrcode');
 const { getUserWithKeys } = require("../utils/user.util");
 
+const { getLocalExternalIp } = require("../utils/network.util");
+
 exports.generateQRCode = async (req, res) => {
   try {
     const ideaId = req.params.id;
@@ -14,7 +16,11 @@ exports.generateQRCode = async (req, res) => {
     if (!idea) return res.status(404).send("Idea not found");
 
     // Generate QR code for the Verification URL
-    const verificationUrl = `${req.protocol}://${req.get('host')}/api/ideas/${ideaId}`;
+    // Use Local IP so mobile phones on same Wi-Fi can access it
+    const host = getLocalExternalIp();
+    const port = process.env.PORT || 5000;
+    const verificationUrl = `http://${host}:${port}/api/ideas/${ideaId}`;
+
     const qrCodeDataUrl = await QRCode.toDataURL(verificationUrl);
 
     res.json({ qrCode: qrCodeDataUrl, message: "QR Code generated successfully" });
@@ -85,9 +91,41 @@ exports.uploadIdea = async (req, res) => {
       { subjectId: user._id, objectId: idea._id, permission: "VERIFY" }
     ];
 
-    // Handle Sharing
+    // Handle Sharing with Multiple Collaborators
+    if (req.body.collaborators) {
+      try {
+        const collaborators = JSON.parse(req.body.collaborators);
+
+        if (Array.isArray(collaborators)) {
+          const User = require("../models/User"); // Lazy load
+
+          for (const collab of collaborators) {
+            const { email, permission } = collab;
+            if (!email) continue;
+
+            const recipient = await User.findOne({ email: email });
+            if (recipient) {
+              // Add ACL entry
+              aclEntries.push({
+                subjectId: recipient._id,
+                objectId: idea._id,
+                permission: permission || "VIEW" // Default to VIEW if missing
+              });
+              console.log(`Shared idea ${idea._id} with ${recipient.email} as ${permission}`);
+            } else {
+              console.warn(`Share recipient not found: ${email}`);
+            }
+          }
+        }
+      } catch (parseErr) {
+        console.error("Error parsing collaborators:", parseErr);
+        // Continue without sharing if parse fails
+      }
+    }
+
+    // Legacy support for single sharedWithEmail (if needed, or just remove)
     if (req.body.sharedWithEmail) {
-      const User = require("../models/User"); // Lazy load
+      const User = require("../models/User");
       const recipient = await User.findOne({ email: req.body.sharedWithEmail.trim() });
       if (recipient) {
         aclEntries.push({
@@ -95,10 +133,6 @@ exports.uploadIdea = async (req, res) => {
           objectId: idea._id,
           permission: "VIEW"
         });
-        console.log(`Shared idea ${idea._id} with ${recipient.email}`);
-      } else {
-        console.warn(`Share recipient not found: ${req.body.sharedWithEmail}`);
-        // We don't fail the upload, just warn.
       }
     }
 
