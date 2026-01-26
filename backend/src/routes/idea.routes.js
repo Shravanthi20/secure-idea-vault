@@ -10,8 +10,9 @@ router.post("/upload", auth, acl("UPLOAD"), upload.single("file"), audit("UPLOAD
 
 router.get("/:id", auth, acl("VIEW"), audit("VIEW"), viewIdea);
 
-const { generateQRCode } = require("../controllers/idea.controller");
+const { generateQRCode, verifyIdeaPublic } = require("../controllers/idea.controller");
 router.get("/:id/qrcode", auth, acl("VERIFY"), audit("VIEW"), generateQRCode);
+router.get("/:id/verify", verifyIdeaPublic); // Public access for QR Code verification
 
 router.get("/download/:id", auth, acl("VIEW"), audit("DOWNLOAD"), downloadIdea);
 module.exports = router;

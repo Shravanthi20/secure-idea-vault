@@ -19,7 +19,8 @@ exports.generateQRCode = async (req, res) => {
     // Use Local IP so mobile phones on same Wi-Fi can access it
     const host = getLocalExternalIp();
     const port = process.env.PORT || 5000;
-    const verificationUrl = `http://${host}:${port}/api/ideas/${ideaId}`;
+    // URL now points to the Public verification endpoint
+    const verificationUrl = `http://${host}:${port}/api/ideas/${ideaId}/verify`;
 
     const qrCodeDataUrl = await QRCode.toDataURL(verificationUrl);
 
@@ -221,5 +222,29 @@ exports.downloadIdea = async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).send("Download failed");
+  }
+};
+
+exports.verifyIdeaPublic = async (req, res) => {
+  try {
+    const idea = await Idea.findById(req.params.id);
+    if (!idea) return res.status(404).send("Idea not found");
+
+    const User = require("../models/User");
+    const owner = await User.findById(idea.ownerId);
+
+    const isSignatureValid = verifySignature(idea.dataHash, idea.digitalSignature, owner.publicKey);
+
+    res.json({
+      status: "Verified",
+      ideaId: idea._id,
+      ownerEmail: owner.email,
+      timestamp: idea.timestamp,
+      integrityCheck: isSignatureValid ? "PASSED" : "FAILED",
+      message: "This secure idea exists and its integrity is verified via Digital Signature."
+    });
+  } catch (err) {
+    console.error("Public Verification Error:", err);
+    res.status(500).send("Verification failed");
   }
 };
