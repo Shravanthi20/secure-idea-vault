@@ -15,6 +15,15 @@ exports.register = async (req, res) => {
         const existing = await User.findOne({ email });
         if (existing) return res.status(400).send("User already exists");
 
+        if (!password || password.length < 12) {
+            return res.status(400).send("Password must be at least 12 characters long");
+        }
+
+        const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[\W_]).{12,}$/;
+        if (!passwordRegex.test(password)) {
+            return res.status(400).send("Password must contain at least one uppercase letter, one lowercase letter, one number, and one special character");
+        }
+
         const salt = crypto.randomBytes(16).toString("hex");
         const passwordHash = await bcrypt.hash(password + salt, 12);
 

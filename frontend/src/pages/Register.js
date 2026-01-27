@@ -12,6 +12,13 @@ function Register() {
     const handleSubmit = async (e) => {
         e.preventDefault();
         setError('');
+
+        // Password Policy Validation
+        const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[\W_]).{12,}$/;
+        if (!passwordRegex.test(password)) {
+            return setError("Password must be at least 12 characters long and include uppercase, lowercase, number, and special character.");
+        }
+
         if (password !== confirmPassword) {
             return setError("Passwords don't match");
         }
@@ -52,6 +59,9 @@ function Register() {
                             onChange={(e) => setPassword(e.target.value)}
                             required
                         />
+                        <small style={{ display: 'block', marginTop: '5px', color: '#666', fontSize: '0.8rem' }}>
+                            Min 12 chars, uppercase, lowercase, number, & special char.
+                        </small>
                     </div>
                     <div className="input-group">
                         <label>Confirm Password</label>

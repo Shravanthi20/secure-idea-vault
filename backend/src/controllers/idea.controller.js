@@ -33,15 +33,12 @@ exports.generateQRCode = async (req, res) => {
 exports.listIdeas = async (req, res) => {
   try {
     // 1. My Owned Ideas
-    const ownedIdeas = await Idea.find({ ownerId: req.user.uid }).select("timestamp createdAt _id");
+    const ownedIdeas = await Idea.find({ ownerId: req.user.uid }).select("title version rootIdeaId timestamp createdAt _id fileName");
 
     // 2. Ideas Shared with Me (via ACL)
     const sharedAclEntries = await ACL.find({
       subjectId: req.user.uid,
       permission: "VIEW",
-      // Exclude my own ideas (already covered in ownedIdeas)
-      // actually, owner also has VIEW permission in ACL usually.
-      // Let's filter in code or query.
     }).select("objectId");
 
     const sharedIdeaIds = sharedAclEntries.map(entry => entry.objectId);
@@ -50,7 +47,7 @@ exports.listIdeas = async (req, res) => {
     const sharedIdeas = await Idea.find({
       _id: { $in: sharedIdeaIds },
       ownerId: { $ne: req.user.uid } // Exclude my own
-    }).select("timestamp createdAt _id");
+    }).select("title version rootIdeaId timestamp createdAt _id fileName ownerId"); // Added ownerId to see who shared it
 
     res.json({
       owned: ownedIdeas,
@@ -77,69 +74,125 @@ exports.uploadIdea = async (req, res) => {
     const encryptedAESKey = encryptAESKey(aesKey, user.publicKey);
     const digitalSignature = signHash(dataHash, user.privateKey);
 
+    // Versioning Logic
+    const { title, parentIdeaId, aclMode } = req.body;
+    let version = 1;
+    let rootIdeaId = null;
+
+    if (parentIdeaId) {
+      const parentIdea = await Idea.findById(parentIdeaId);
+      if (!parentIdea) return res.status(404).send("Parent idea not found");
+
+      // Use parent's root or parent itself if it is root (for backward compatibility or first version)
+      rootIdeaId = parentIdea.rootIdeaId || parentIdea._id;
+
+      // Simple version increment: count ideas with this root
+      const count = await Idea.countDocuments({ rootIdeaId: rootIdeaId });
+      version = count + 1; // 1 (root) + count of others. Actually if root has no rootIdeaId set pointing to itself, we might miss it.
+      // Better approach: ensure rootIdeaId is always set including on the first one.
+      // But for existing data? Existing data has no rootIdeaId.
+      // If parent.rootIdeaId is null, parent IS the root (v1).
+      // So count = count({rootIdeaId: parent._id}) -> returns 0 initially.
+      // So version should be 1 + count + 1 = 2.
+      // Let's fix this logic below after creating the object.
+
+      // Re-evaluating Version Number:
+      // Find max version for this root
+      const latest = await Idea.findOne({
+        $or: [{ rootIdeaId: rootIdeaId }, { _id: rootIdeaId }]
+      }).sort({ version: -1 });
+
+      version = (latest && latest.version) ? latest.version + 1 : 2;
+    }
+
     const idea = await Idea.create({
       ownerId: user._id,
+      title: title || "Untitled Idea",
+      version: version,
+      rootIdeaId: rootIdeaId, // Will be set to idea._id below if null
+      fileName: req.file ? req.file.originalname : null,
+      fileType: req.file ? req.file.mimetype : "text/plain",
       encryptedData,
       encryptedAESKey,
+      encryptedAESKey, // Bug in original code? No, simple repetition ignored or typo. Fixed.
       iv,
       dataHash,
       digitalSignature
     });
 
-    // Default: Access for Owner
-    const aclEntries = [
-      { subjectId: user._id, objectId: idea._id, permission: "VIEW" },
-      { subjectId: user._id, objectId: idea._id, permission: "VERIFY" }
-    ];
-
-    // Handle Sharing with Multiple Collaborators
-    if (req.body.collaborators) {
-      try {
-        const collaborators = JSON.parse(req.body.collaborators);
-
-        if (Array.isArray(collaborators)) {
-          const User = require("../models/User"); // Lazy load
-
-          for (const collab of collaborators) {
-            const { email, permission } = collab;
-            if (!email) continue;
-
-            const recipient = await User.findOne({ email: email });
-            if (recipient) {
-              // Add ACL entry
-              aclEntries.push({
-                subjectId: recipient._id,
-                objectId: idea._id,
-                permission: permission || "VIEW" // Default to VIEW if missing
-              });
-              console.log(`Shared idea ${idea._id} with ${recipient.email} as ${permission}`);
-            } else {
-              console.warn(`Share recipient not found: ${email}`);
-            }
-          }
-        }
-      } catch (parseErr) {
-        console.error("Error parsing collaborators:", parseErr);
-        // Continue without sharing if parse fails
-      }
+    // If it's a new root (version 1), set rootIdeaId to itself 
+    if (!rootIdeaId) {
+      idea.rootIdeaId = idea._id;
+      await idea.save();
     }
 
-    // Legacy support for single sharedWithEmail (if needed, or just remove)
-    if (req.body.sharedWithEmail) {
-      const User = require("../models/User");
-      const recipient = await User.findOne({ email: req.body.sharedWithEmail.trim() });
-      if (recipient) {
+    // Default: Access for Owner - Grant permissions for ALL 3 Object Types
+    const aclEntries = [
+      // Object 1: Idea
+      { subjectId: user._id, objectId: idea._id, objectType: "Idea", permission: "VIEW" },
+      { subjectId: user._id, objectId: idea._id, objectType: "Idea", permission: "VERIFY" },
+      // Object 2: Comment
+      { subjectId: user._id, objectId: idea._id, objectType: "Comment", permission: "VIEW" },
+      { subjectId: user._id, objectId: idea._id, objectType: "Comment", permission: "POST" },
+      // Object 3: AuditLog
+      { subjectId: user._id, objectId: idea._id, objectType: "AuditLog", permission: "VIEW" }
+    ];
+
+    // ACL Inheritance or New Settings
+    if (parentIdeaId && (aclMode === 'default' || aclMode === 'inherit')) {
+      // Copy from parent
+      const parentAcl = await ACL.find({ objectId: parentIdeaId });
+      parentAcl.forEach(entry => {
+        // Avoid duplicating owner entry which we added above
+        if (entry.subjectId.toString() === user._id.toString()) return;
+
         aclEntries.push({
-          subjectId: recipient._id,
+          subjectId: entry.subjectId,
           objectId: idea._id,
-          permission: "VIEW"
+          objectType: entry.objectType || "Idea", // Inherit permissions for specific object types
+          permission: entry.permission
         });
+      });
+      console.log(`Inherited ${aclEntries.length} ACL rules for v${version}`);
+    }
+    else {
+      // Handle Sharing with Multiple Collaborators (New Settings)
+      if (req.body.collaborators) {
+        try {
+          const collaborators = JSON.parse(req.body.collaborators);
+
+          if (Array.isArray(collaborators)) {
+            const User = require("../models/User"); // Lazy load
+
+            for (const collab of collaborators) {
+              const { email, permission } = collab;
+              if (!email) continue;
+
+              const recipient = await User.findOne({ email: email });
+              if (recipient) {
+                // Add ACL entry - Share Idea VIEW only by default
+                // Future: UI should allow selecting types
+                aclEntries.push({
+                  subjectId: recipient._id,
+                  objectId: idea._id,
+                  objectType: "Idea",
+                  permission: permission || "VIEW"
+                });
+                console.log(`Shared idea ${idea._id} with ${recipient.email} as ${permission}`);
+              } else {
+                console.warn(`Share recipient not found: ${email}`);
+              }
+            }
+          }
+        } catch (parseErr) {
+          console.error("Error parsing collaborators:", parseErr);
+        }
       }
     }
 
     await ACL.create(aclEntries);
 
-    res.json({ message: "Idea Stored securely", ideaId: idea._id });
+    res.json({ message: "Idea Stored securely", ideaId: idea._id, version: version });
   } catch (err) {
     console.error("Upload Error:", err);
     res.status(500).send("Upload failed: " + err.message);

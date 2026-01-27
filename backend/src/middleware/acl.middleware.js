@@ -3,8 +3,9 @@ const mongoose = require("mongoose");
 
 /*
   requiredPermission → VIEW / UPLOAD / VERIFY
+  resourceType → Idea / Comment / AuditLog (Default: Idea)
 */
-module.exports = (requiredPermission) => {
+module.exports = (requiredPermission, resourceType = "Idea") => {
   return async (req, res, next) => {
     try {
       if (req.user.role === "ADMIN") {
@@ -35,11 +36,12 @@ module.exports = (requiredPermission) => {
       const aclEntry = await ACL.findOne({
         subjectId: userId,
         objectId: ideaId,
+        objectType: resourceType,
         permission: requiredPermission
       });
 
       if (!aclEntry) {
-        return res.status(403).send("Access denied");
+        return res.status(403).send(`Access denied for ${resourceType}`);
       }
 
       next();

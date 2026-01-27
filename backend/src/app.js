@@ -20,5 +20,7 @@ app.use("/api/auth", rateLimit, auth);
 app.use("/api/ideas", idea);
 app.use("/api/acl", acl);
 app.use("/api/verify", require("./routes/verify.routes"));
+app.use("/api/ideas", require("./routes/comment.routes")); // Comments are sub-resource of ideas
+app.use("/api/ideas", require("./routes/audit.routes")); // Audit logs are sub-resource of ideas
 
 module.exports = app;
