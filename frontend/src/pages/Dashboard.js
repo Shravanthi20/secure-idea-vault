@@ -12,6 +12,22 @@ function Dashboard() {
     const [sharedIdeas, setSharedIdeas] = useState([]); // Flat list
     const [error, setError] = useState('');
     const [qrCode, setQrCode] = useState(null);
+    const [integrityFile, setIntegrityFile] = useState(null);
+
+    const handleCheckIntegrity = async () => {
+        if (!integrityFile) return alert("Please select a file first");
+        const formData = new FormData();
+        formData.append('file', integrityFile);
+
+        try {
+            const res = await api.post(`/ideas/${searchId}/integrity`, formData, {
+                headers: { 'Content-Type': 'multipart/form-data' }
+            });
+            alert(res.data.message);
+        } catch (err) {
+            alert(err.response?.data?.message || "Verification Failed! File mismatch.");
+        }
+    };
 
     React.useEffect(() => {
         fetchMyIdeas();
@@ -105,8 +121,15 @@ function Dashboard() {
 
         try {
             // 1. Fetch Idea Content
+            // NOTE: Backend now returns { content: "...", metadata: { ... } } or just "..." (legacy)
             const res = await api.get(`/ideas/${id}`);
-            setIdeaData(res.data);
+
+            let finalData = res.data;
+            if (res.data.content && res.data.metadata) {
+                finalData = { ...res.data.metadata, content: res.data.content, _id: id }; // Merge for easier UI usage
+            }
+
+            setIdeaData(finalData);
             setSearchId(id); // update input if clicked from list
 
             // 2. Fetch Comments (Object 2) - Fail gracefully if 403
@@ -328,12 +351,34 @@ function Dashboard() {
                                     <button className="btn btn-primary" onClick={() => generateQr(searchId)}>
                                         Generate Ownership QR
                                     </button>
-                                    <button className="btn btn-secondary" onClick={() => downloadFile(searchId)}>
-                                        Download Original
-                                    </button>
+                                    {ideaData.canView !== false && (
+                                        <button className="btn btn-secondary" onClick={() => downloadFile(searchId)}>
+                                            Download Original
+                                        </button>
+                                    )}
                                 </div>
                             </div>
                             <hr style={{ borderColor: 'var(--border-color)' }} />
+
+                            {/* --- INTEGRITY CHECK SECTION (New) --- */}
+                            <div style={{ marginBottom: '20px', paddingBottom: '20px', borderBottom: '1px solid var(--border-color)' }}>
+                                <h4 style={{ marginBottom: '10px' }}>Verify File Integrity</h4>
+                                <p style={{ fontSize: '0.8rem', color: '#888' }}>
+                                    Upload a file to check if it matches the original stored record strictly.
+                                </p>
+                                <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                                    <input
+                                        type="file"
+                                        className="input-control"
+                                        style={{ width: 'auto' }}
+                                        onChange={(e) => setIntegrityFile(e.target.files[0])}
+                                    />
+                                    <button className="btn btn-secondary" onClick={handleCheckIntegrity}>
+                                        Verify Match
+                                    </button>
+                                </div>
+                            </div>
+
                             <pre style={{
                                 background: 'black',
                                 padding: '15px',
@@ -343,11 +388,29 @@ function Dashboard() {
                                 maxHeight: '400px',
                                 overflow: 'auto'
                             }}>
-                                {/* Check if it looks like a binary file (e.g. PDF header) */}
-                                {(typeof ideaData === 'string' && ideaData.substring(0, 10).includes('%PDF'))
-                                    ? " [Encrypted PDF Document] \n\n This file contains binary data and cannot be displayed as text. \n Please click 'Download Original' above to view the PDF."
-                                    : (typeof ideaData === 'string' ? ideaData : JSON.stringify(ideaData, null, 2))
-                                }
+                                {/* Message Logic: 1. No View Access? 2. Binary File? 3. Text Content */}
+                                {(() => {
+                                    if (ideaData.canView === false) {
+                                        return " [ACCESS RESTRICTED] \n\n You have VERIFY-only permission. \n The content is hidden, but the metadata above is verified signed by the owner.";
+                                    }
+
+                                    const rawContent = ideaData.content || ideaData.message;
+                                    const fileType = ideaData.fileType || 'text/plain';
+
+                                    if (!rawContent) return "No content available.";
+
+                                    // If we detect it's NOT text/plain, show download prompt
+                                    if (fileType && !fileType.startsWith('text/') && !rawContent.substring(0, 10).includes('%PDF')) {
+                                        return ` [BINARY FILE DETECTED] \n\n Type: ${fileType} \n\n This file cannot be displayed as plain text. \n Please click 'Download Original' to view it.`;
+                                    }
+
+                                    // Legacy Check
+                                    if (rawContent.substring(0, 10).includes('%PDF')) {
+                                        return " [Encrypted PDF Document] \n\n This file contains binary data and cannot be displayed as text. \n Please click 'Download Original' above to view the PDF.";
+                                    }
+
+                                    return rawContent;
+                                })()}
                             </pre>
 
                             {qrCode && (
@@ -415,14 +478,14 @@ function Dashboard() {
                                     </div>
                                 )}
                             </div>
-                            {/* --- ACCESS CONTROL SECTION (Owner Only) --- */
-                                ideaData.ownerId === user?.uid && ( // Assuming user.uid is available in context and ideaData has ownerId
-                                    <div style={{ marginTop: '20px', textAlign: 'right' }}>
-                                        <button className="btn btn-sm btn-secondary" onClick={() => openAccessModal(ideaData._id)}>
-                                            Manage Access
-                                        </button>
-                                    </div>
-                                )}
+                            {/* --- ACCESS CONTROL SECTION (Owner Only) --- */}
+                            {myIdeas.some(i => i._id === searchId) && (
+                                <div style={{ marginTop: '20px', textAlign: 'right' }}>
+                                    <button className="btn btn-sm btn-secondary" onClick={() => openAccessModal(searchId)}>
+                                        Manage Access
+                                    </button>
+                                </div>
+                            )}
                         </div>
                     )}
                 </div>

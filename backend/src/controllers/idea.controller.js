@@ -38,7 +38,7 @@ exports.listIdeas = async (req, res) => {
     // 2. Ideas Shared with Me (via ACL)
     const sharedAclEntries = await ACL.find({
       subjectId: req.user.uid,
-      permission: "VIEW",
+      permission: { $in: ["VIEW", "VERIFY"] },
     }).select("objectId");
 
     const sharedIdeaIds = sharedAclEntries.map(entry => entry.objectId);
@@ -170,14 +170,29 @@ exports.uploadIdea = async (req, res) => {
 
               const recipient = await User.findOne({ email: email });
               if (recipient) {
+                // Encrypt Key for Recipient
+                const sharedKeyForRecip = encryptAESKey(aesKey, recipient.publicKey);
+
                 // Add ACL entry - Share Idea VIEW only by default
-                // Future: UI should allow selecting types
                 aclEntries.push({
                   subjectId: recipient._id,
                   objectId: idea._id,
                   objectType: "Idea",
-                  permission: permission || "VIEW"
+                  permission: permission || "VIEW",
+                  encryptedSharedKey: sharedKeyForRecip // Store the re-encrypted key!
                 });
+
+                // If permission is VIEW, they should also be able to verify?
+                if ((permission || "VIEW") === "VIEW") {
+                  aclEntries.push({
+                    subjectId: recipient._id,
+                    objectId: idea._id,
+                    objectType: "Idea",
+                    permission: "VERIFY"
+                  });
+                  // Note: VERIFY permission doesn't need the decryption key, so we leave encryptedSharedKey undefined/null
+                }
+
                 console.log(`Shared idea ${idea._id} with ${recipient.email} as ${permission}`);
               } else {
                 console.warn(`Share recipient not found: ${email}`);
@@ -206,46 +221,80 @@ exports.viewIdea = async (req, res) => {
     const idea = await Idea.findById(req.params.id);
     if (!idea) return res.status(404).send("Not found");
 
-    const aesKey = decryptAESKey(
-      idea.encryptedAESKey,
-      user.privateKey
-    );
+    let isOwner = (idea.ownerId.toString() === user._id.toString());
+    let canView = isOwner;
+    let encryptedKeyToUse = idea.encryptedAESKey;
 
-    const decryptedData = decryptAES(
-      idea.encryptedData,
-      aesKey,
-      idea.iv
-    );
+    // Check if I am the owner
+    if (!isOwner) {
+      // Not owner, find the Shared Key in ACL
+      const aclEntry = await ACL.findOne({
+        subjectId: user._id,
+        objectId: idea._id,
+        objectType: "Idea",
+        permission: { $in: ["VIEW", "VERIFY"] }
+      });
 
-    const isValid = verifySignature(
-      idea.dataHash,
-      idea.digitalSignature,
-      user.publicKey // Wait, signature is verified with author's Public Key. Ideally idea.ownerId's public key.
-      // But for MVP if I am viewing my own idea, it works. 
-      // If I view SHARED idea, I need OWNER's public key.
-      // For now, let's assume we verify integrity using the Viewer's key? NO.
-      // Digital Signature integrity check requires the SIGNER'S public key.
-      // Since we don't have a "fetch owner" logic easily here, and requirement is just "Implement digital signature",
-      // verifying against the current user (if owner) satisfies the basic flow.
-      // To be strictly correct: We should fetch Idea -> Owner -> Owner.PublicKey.
-    );
+      if (!aclEntry) {
+        return res.status(403).send("Access Denied: You do not have permission to view or verify this idea.");
+      }
 
-    // Correcting Verification Logic:
-    // Ideally: const owner = await User.findById(idea.ownerId); verify(..., owner.publicKey);
-    // But let's stick to the prompt's implied simple flow or correct it. 
-    // Let's Correct it!
+      if (aclEntry.permission === 'VERIFY') {
+        canView = false;
+        // Verifiers do NOT get the key. 
+      } else {
+        // VIEWers MUST have the key
+        if (!aclEntry.encryptedSharedKey) {
+          return res.status(403).send("Access Denied: No valid shared key found.");
+        }
+        encryptedKeyToUse = aclEntry.encryptedSharedKey;
+      }
+    }
 
-    // HOWEVER, for this specific refactor step I will use 'user.publicKey' assuming the viewer is the owner 
-    // (since shared viewing logic isn't fully built out with key exchange for shared users).
-    // Actually, encrypting AES key for the viewer?
-    // The current Schema stores ONE encryptedAESKey. This implies ONLY THE OWNER can decrypt it.
-    // If we want to share, we would need to re-encrypt AES key for the recipient. 
-    // Given the constraints/time, the "View" is likely intended for the Owner.
+    let decryptedContent = null;
+    let contentMessage = null;
 
-    const isValidSignature = verifySignature(idea.dataHash, idea.digitalSignature, user.publicKey);
-    if (!isValidSignature) console.warn("Signature Warning: viewing user key used for verification.");
+    if (canView) {
+      try {
+        const aesKey = decryptAESKey(encryptedKeyToUse, user.privateKey);
+        const decryptedBuffer = decryptAES(idea.encryptedData, aesKey, idea.iv);
+        decryptedContent = decryptedBuffer.toString();
+      } catch (e) {
+        console.error("Decryption failed:", e);
+        contentMessage = "Error decrypting content.";
+      }
+    } else {
+      contentMessage = "Restricted: You have VERIFY-only valid access. Content is hidden.";
+    }
 
-    res.send(decryptedData.toString());
+    // Verify digital signature
+    // FIX: Verify signature using OWNER'S Public Key, not Viewer's
+    let verificationKey = user.publicKey;
+    if (!isOwner) {
+      const User = require("../models/User");
+      const ownerUser = await User.findById(idea.ownerId);
+      if (ownerUser) {
+        verificationKey = ownerUser.publicKey;
+      }
+    }
+
+    const isValidSignature = verifySignature(idea.dataHash, idea.digitalSignature, verificationKey);
+    // if (!isValidSignature) console.warn("Signature Warning: Content integrity check failed or key mismatch.");
+
+    res.json({
+      content: decryptedContent,
+      message: contentMessage,
+      metadata: {
+        title: idea.title,
+        version: idea.version,
+        ownerId: idea.ownerId,
+        timestamp: idea.timestamp,
+        integrity: isValidSignature ? "VERIFIED" : "WARNING",
+        fileType: idea.fileType,
+        fileName: idea.fileName,
+        canView: canView
+      }
+    });
   } catch (err) {
     console.error("View Idea Error:", err);
     console.error("Stack:", err.stack);
@@ -259,8 +308,26 @@ exports.downloadIdea = async (req, res) => {
     const idea = await Idea.findById(req.params.id);
     if (!idea) return res.status(404).send("Not found");
 
+    let encryptedKeyToUse = idea.encryptedAESKey;
+
+    // Check if I am the owner
+    if (idea.ownerId.toString() !== user._id.toString()) {
+      const aclEntry = await ACL.findOne({
+        subjectId: user._id,
+        objectId: idea._id,
+        objectType: "Idea",
+        permission: "VIEW"
+      });
+
+      if (!aclEntry || !aclEntry.encryptedSharedKey) {
+        console.warn(`Download attempt by ${user.email} failed: No VIEW permission or missing key`);
+        return res.status(403).send("Access Denied: You do not have permission to download this file.");
+      }
+      encryptedKeyToUse = aclEntry.encryptedSharedKey;
+    }
+
     const aesKey = decryptAESKey(
-      idea.encryptedAESKey,
+      encryptedKeyToUse,
       user.privateKey
     );
 
@@ -270,11 +337,13 @@ exports.downloadIdea = async (req, res) => {
       idea.iv
     );
 
-    res.setHeader("Content-Disposition", "attachment");
+    // Set correct filename and type
+    res.setHeader("Content-Disposition", `attachment; filename="${idea.fileName || 'secure-idea.txt'}"`);
+    res.setHeader("Content-Type", idea.fileType || "application/octet-stream");
     res.send(decryptedData);
   } catch (err) {
-    console.error(err);
-    res.status(500).send("Download failed");
+    console.error("Download Error:", err);
+    res.status(500).send("Download failed. You might not have the correct permissions.");
   }
 };
 
@@ -299,5 +368,54 @@ exports.verifyIdeaPublic = async (req, res) => {
   } catch (err) {
     console.error("Public Verification Error:", err);
     res.status(500).send("Verification failed");
+  }
+
+};
+
+exports.checkIntegrity = async (req, res) => {
+  try {
+    const ideaId = req.params.id;
+    const idea = await Idea.findById(ideaId);
+    if (!idea) return res.status(404).send("Idea not found");
+
+    // --- Access Control Check ---
+    let hasAccess = false;
+    if (idea.ownerId.toString() === req.user.uid) {
+      hasAccess = true;
+    } else {
+      const aclEntry = await ACL.findOne({
+        subjectId: req.user.uid,
+        objectId: ideaId,
+        objectType: "Idea",
+        permission: { $in: ["VIEW", "VERIFY"] }
+      });
+      if (aclEntry) hasAccess = true;
+    }
+
+    if (!hasAccess) return res.status(403).send("Access Denied: You cannot verify this file.");
+    // ---------------------------
+
+    // Calculate hash of uploaded file/data
+    let dataBuffer;
+    if (req.file) {
+      dataBuffer = req.file.buffer;
+    } else {
+      // If checking text integrity
+      dataBuffer = toBuffer(req.body.data);
+    }
+
+    if (!dataBuffer) return res.status(400).send("No data provided for verification");
+
+    const calculatedHash = hashData(dataBuffer);
+
+    if (calculatedHash === idea.dataHash) {
+      return res.json({ status: "MATCH", message: "File integrity verified. Content matches exactly." });
+    } else {
+      return res.status(400).json({ status: "MISMATCH", message: "Integrity Check Failed! The file does not match the original record." });
+    }
+
+  } catch (err) {
+    console.error("Integrity Check Error:", err);
+    res.status(500).send("Error checking integrity");
   }
 };

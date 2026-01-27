@@ -23,42 +23,66 @@ exports.grantAccess = async (req, res) => {
     try {
         const { ideaId } = req.params;
         const { email, permissions } = req.body;
-        // permissions = [{ objectType: 'Idea', permission: 'VIEW' }, { objectType: 'Comment', permission: 'VIEW' }]
 
-        // Verify Owner
+        // 1. Verify Owner and Get Owner's Private Key
+        const { getUserWithKeys } = require("../utils/user.util");
+        const { decryptAESKey, encryptAESKey } = require("../services/crypto.service");
+
+        const owner = await getUserWithKeys(req.user.uid);
         const idea = await Idea.findById(ideaId);
+
+        if (!idea) return res.status(404).send("Idea not found");
         if (idea.ownerId.toString() !== req.user.uid) return res.status(403).send("Only owner can grant access");
 
+        // 2. Find Recipient and Get Public Key
         const recipient = await User.findOne({ email });
         if (!recipient) return res.status(404).send("User not found");
 
-        const entries = [];
+        // 3. Prepare Encrypted Key for Sharing (Access to IDEA object only)
+        let sharedKeyForRecipient = null;
+        try {
+            // Decrypt the Master AES Key using Owner's Private Key
+            const aesKeyString = decryptAESKey(idea.encryptedAESKey, owner.privateKey);
+            // Encrypt for Recipient
+            sharedKeyForRecipient = encryptAESKey(aesKeyString, recipient.publicKey);
+        } catch (e) {
+            console.error("Owner key decryption failed during share:", e);
+            return res.status(500).send("Internal Encryption Error: Cannot decrypt file key.");
+        }
+
+        let addedCount = 0;
         if (Array.isArray(permissions)) {
             for (const p of permissions) {
-                // Check if exists
-                const existing = await ACL.findOne({
+                // Construct the ACL entry object
+                const updateData = {
                     subjectId: recipient._id,
                     objectId: ideaId,
                     objectType: p.objectType,
                     permission: p.permission
-                });
+                };
 
-                if (!existing) {
-                    entries.push({
+                // !!! KEY DISTRIBUTION POINT !!! 
+                // If granting access to the IDEA itself, include the key encrypted for the recipient
+                if (p.objectType === 'Idea' || p.objectType === 'IdeaVersion') {
+                    updateData.encryptedSharedKey = sharedKeyForRecipient;
+                }
+
+                // Upsert: Create if not exists, Update if exists (to fix missing keys)
+                await ACL.findOneAndUpdate(
+                    {
                         subjectId: recipient._id,
                         objectId: ideaId,
                         objectType: p.objectType,
                         permission: p.permission
-                    });
-                }
+                    },
+                    updateData,
+                    { upsert: true, new: true }
+                );
+                addedCount++;
             }
         }
 
-        if (entries.length > 0) {
-            await ACL.create(entries);
-        }
-
-        res.json({ message: "Access granted", added: entries.length });
+        res.json({ message: "Access granted", added: addedCount });
     } catch (err) {
         console.error("Grant Access Error:", err);
         res.status(500).send("Error granting access");
