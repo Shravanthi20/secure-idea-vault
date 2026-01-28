@@ -88,16 +88,7 @@ exports.uploadIdea = async (req, res) => {
 
       // Simple version increment: count ideas with this root
       const count = await Idea.countDocuments({ rootIdeaId: rootIdeaId });
-      version = count + 1; // 1 (root) + count of others. Actually if root has no rootIdeaId set pointing to itself, we might miss it.
-      // Better approach: ensure rootIdeaId is always set including on the first one.
-      // But for existing data? Existing data has no rootIdeaId.
-      // If parent.rootIdeaId is null, parent IS the root (v1).
-      // So count = count({rootIdeaId: parent._id}) -> returns 0 initially.
-      // So version should be 1 + count + 1 = 2.
-      // Let's fix this logic below after creating the object.
-
-      // Re-evaluating Version Number:
-      // Find max version for this root
+      version = count + 1; 
       const latest = await Idea.findOne({
         $or: [{ rootIdeaId: rootIdeaId }, { _id: rootIdeaId }]
       }).sort({ version: -1 });
@@ -114,7 +105,7 @@ exports.uploadIdea = async (req, res) => {
       fileType: req.file ? req.file.mimetype : "text/plain",
       encryptedData,
       encryptedAESKey,
-      encryptedAESKey, // Bug in original code? No, simple repetition ignored or typo. Fixed.
+      encryptedAESKey, 
       iv,
       dataHash,
       digitalSignature
@@ -140,10 +131,8 @@ exports.uploadIdea = async (req, res) => {
 
     // ACL Inheritance or New Settings
     if (parentIdeaId && (aclMode === 'default' || aclMode === 'inherit')) {
-      // Copy from parent
       const parentAcl = await ACL.find({ objectId: parentIdeaId });
       parentAcl.forEach(entry => {
-        // Avoid duplicating owner entry which we added above
         if (entry.subjectId.toString() === user._id.toString()) return;
 
         aclEntries.push({

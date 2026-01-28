@@ -29,16 +29,6 @@ exports.register = async (req, res) => {
 
         // Generate RSA pair
         const { publicKey, privateKey } = generateRSAKeys();
-
-        // Encrypt Private Key with a derived key from password (or separate one, simplistic here for MVP)
-        // Ideally we use a strong key derivation, but here we use a random AES key encrypted under itself or similar?
-        // Actually, to store privateKey securely, we typically encrypt it with the user's password-derived key.
-        // For this simplified flow, we'll store it but really should be encrypted. 
-        // The Model expects 'encryptedPrivateKey: Buffer' and 'privateKeyIV: Buffer'.
-
-        // Let's encrypt the private key using a hash of the SERVER SECRET (JWT_SECRET)
-        // This allows the server to decrypt it later to perform actions on behalf of the user.
-        // (In a real high-security app, we might use a Hardware Security Module or separate Key Management Service)
         const masterKey = crypto.createHash("sha256").update(process.env.JWT_SECRET).digest(); // 32 bytes
         const iv = crypto.randomBytes(16);
         const cipher = crypto.createCipheriv("aes-256-cbc", masterKey, iv);

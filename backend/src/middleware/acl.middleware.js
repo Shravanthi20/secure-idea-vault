@@ -16,22 +16,15 @@ module.exports = (requiredPermission, resourceType = "Idea") => {
       }
 
       const userId = req.user.uid;
-      // Use optional chaining or check existence because req.body might be undefined for uploads
       const ideaId = req.params.id || (req.body && req.body.ideaId);
 
       if (!ideaId) {
-        // Only trigger this error if we didn't bypass above (i.e. not Admin/Owner uploading)
         return res.status(400).send("Missing Idea ID");
       }
 
       if (!mongoose.isValidObjectId(ideaId)) {
         return res.status(400).send("Invalid Idea ID format");
       }
-      /* 
-         NOTE: For uploads, req.body is NOT populated yet because multer runs After this middleware.
-         So accessing req.body.ideaId here for Uploads works only if role=OWNER bypasses this.
-         If execution reaches here for Upload, it means role != OWNER, and it WILL fail/crash if finding with undefined.
-      */
 
       const aclEntry = await ACL.findOne({
         subjectId: userId,
