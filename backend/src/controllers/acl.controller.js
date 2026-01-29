@@ -101,7 +101,6 @@ exports.revokeAccess = async (req, res) => {
         // Wait, ACLSchema: objectId ref Idea.
         // We need to check if req.user.uid === idea.ownerId
 
-        // Let's refetch Idea to be sure
         const realIdea = await Idea.findById(aclEntry.objectId);
         if (!realIdea) return res.status(404).send("Resource not found");
 

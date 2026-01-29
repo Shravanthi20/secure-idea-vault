@@ -14,9 +14,6 @@ exports.generateQRCode = async (req, res) => {
     // Verify user has access to this idea first
     const idea = await Idea.findById(ideaId);
     if (!idea) return res.status(404).send("Idea not found");
-
-    // Generate QR code for the Verification URL
-    // Use Local IP so mobile phones on same Wi-Fi can access it
     const host = getLocalExternalIp();
     const port = process.env.PORT || 5000;
     // URL now points to the Public verification endpoint
@@ -88,7 +85,7 @@ exports.uploadIdea = async (req, res) => {
 
       // Simple version increment: count ideas with this root
       const count = await Idea.countDocuments({ rootIdeaId: rootIdeaId });
-      version = count + 1; 
+      version = count + 1;
       const latest = await Idea.findOne({
         $or: [{ rootIdeaId: rootIdeaId }, { _id: rootIdeaId }]
       }).sort({ version: -1 });
@@ -105,7 +102,7 @@ exports.uploadIdea = async (req, res) => {
       fileType: req.file ? req.file.mimetype : "text/plain",
       encryptedData,
       encryptedAESKey,
-      encryptedAESKey, 
+      encryptedAESKey,
       iv,
       dataHash,
       digitalSignature
@@ -257,7 +254,6 @@ exports.viewIdea = async (req, res) => {
     }
 
     // Verify digital signature
-    // FIX: Verify signature using OWNER'S Public Key, not Viewer's
     let verificationKey = user.publicKey;
     if (!isOwner) {
       const User = require("../models/User");
@@ -268,7 +264,6 @@ exports.viewIdea = async (req, res) => {
     }
 
     const isValidSignature = verifySignature(idea.dataHash, idea.digitalSignature, verificationKey);
-    // if (!isValidSignature) console.warn("Signature Warning: Content integrity check failed or key mismatch.");
 
     res.json({
       content: decryptedContent,
